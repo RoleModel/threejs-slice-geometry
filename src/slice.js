@@ -73,7 +73,7 @@ module.exports = function(THREE) {
       }
     }
 
-    var getPairIndex = function(point, points){
+    var getNearestPointIndex = function(point, points){
       let index = 0;
       for (let i = 0; i < points.length; i++){
         let p = points[i];
