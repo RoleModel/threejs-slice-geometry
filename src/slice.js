@@ -233,7 +233,13 @@ module.exports = function(THREE) {
           const a = contour[result[offset]].clone()
           const b = contour[result[offset+1]].clone()
           const c = contour[result[offset+2]].clone()
-          this.targetGeometry.vertices.push(a, b, c)
+
+          var normal = this.faceNormalFromVertices([a, b, c])
+          if(normal.dot(this.slicePlane.normal) > .5) {
+            this.targetGeometry.vertices.push(c, b, a)
+          } else {
+            this.targetGeometry.vertices.push(a, b, c)
+          }
           this.targetGeometry.faces.push(
             new THREE.Face3(vertexIndex, vertexIndex + 1, vertexIndex + 2)
           )
@@ -428,10 +434,14 @@ module.exports = function(THREE) {
         var vertices = faceIndices.map(function(index) {
             return this.targetGeometry.vertices[index];
         }.bind(this));
-        var edgeA = vertices[0].clone().sub(vertices[1]);
-        var edgeB = vertices[0].clone().sub(vertices[2]);
-        return edgeA.cross(edgeB).normalize();
+        return this.faceNormalFromVertices(vertices)
     };
+
+    GeometryBuilder.prototype.faceNormalFromVertices = function(vertices) {
+      var edgeA = vertices[0].clone().sub(vertices[1]);
+      var edgeB = vertices[0].clone().sub(vertices[2]);
+      return edgeA.cross(edgeB).normalize();
+    }
 
     return sliceGeometry;
 };
