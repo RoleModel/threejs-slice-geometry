@@ -19,11 +19,17 @@ module.exports = function(THREE) {
       }
     }
 
+    const getTransform = (plane) => {
+      const a = new THREE.Vector3(0, 0, 1)
+      const q = new THREE.Quaternion()
+      const b = plane.normal
+      q.setFromUnitVectors(b, a)
+      return q
+    }
 
     // contour-finding code based on https://stackoverflow.com/a/46811485/2100919
-    var getContours = function(points, contours, firstRun) {
-      //console.log("firstRun:", firstRun);
-
+    // heavily modified to permit finding maximal open-ended non-cyclic contours
+    var getContours = function(points, contours) {
       let contour = [];
 
       // find first line for the contour
@@ -47,29 +53,45 @@ module.exports = function(THREE) {
       contours.push(contour);
       let allChecked = 0;
       points.forEach(p => { allChecked += p.checked == true ? 1 : 0; });
-      //console.log("allChecked: ", allChecked == points.length);
-      if (allChecked != points.length) { return getContours(points, contours, false); }
+      if (allChecked != points.length) { return getContours(points, contours); }
       return contours;
     }
 
     var getContour = function(currentPoint, points, contour) {
       let p1Index = getNearestPointIndex(currentPoint, points);
-      let p1 = points[p1Index];
-      p1.checked = true;
-      let p2Index = getPairIndex(p1, p1Index, points);
-      let p2 = points[p2Index];
-      p2.checked = true;
-      let isClosed = p2.equals(contour[0], 1e-6);
-      if (!isClosed) {
-        if(p1Index === 0) {
-          console.error('DEGENERATE CASE')
-          return contour
+      if(p1Index !== 0) { // match found
+        let p1 = points[p1Index];
+        p1.checked = true;
+        let p2Index = getPairIndex(p1, p1Index, points);
+        let p2 = points[p2Index];
+        p2.checked = true;
+        let isClosed = p2.equals(contour[0], 1e-6);
+        if (!isClosed) {
+          contour.push(p2.clone());
+          return getContour(p2, points, contour);
+        } else {
+          contour.push(contour[0].clone());
+          contour.closed = true
+          return contour;
         }
-        contour.push(p2.clone());
-        return getContour(p2, points, contour);
       } else {
-        contour.push(contour[0].clone());
-        return contour;
+        return getContourBack(contour[0], points, contour)
+      }
+    }
+
+    var getContourBack = function(currentPoint, points, contour) {
+      let p1Index = getNearestPointIndex(currentPoint, points);
+      if(p1Index !== 0) {
+        let p1 = points[p1Index];
+        p1.checked = true;
+        let p2Index = getPairIndex(p1, p1Index, points);
+        let p2 = points[p2Index];
+        p2.checked = true;
+        contour.unshift(p2.clone())
+        return getContourBack(contour[0], points, contour)
+      } else { // we already know it can't be closed
+        contour.closed = false
+        return contour
       }
     }
 
@@ -77,7 +99,7 @@ module.exports = function(THREE) {
       let index = 0;
       for (let i = 0; i < points.length; i++){
         let p = points[i];
-        if (p.checked !== true && p.equals(point, 1e-6)){
+        if (p.checked !== true && p.equals(point, 1e-6)){ // early exits, not technically 'nearest' point. Nearest would be better, but also slower
           index = i;
           break;
         }
@@ -85,22 +107,12 @@ module.exports = function(THREE) {
       return index;
     }
 
-    var getPairIndex = function(point, pointIndex, points) {
+    var getPairIndex = function(_point, pointIndex, _points) {
       if (pointIndex % 2 === 0) {
         return pointIndex + 1
       } else {
         return pointIndex - 1
       }
-
-      // let index = 0;
-      // for (let i = 0; i < points.length; i++) {
-      //   let p = points[i];
-      //   if (i != pointIndex && p.checked == false && p.faceIndex == point.faceIndex) {
-      //     index = i;
-      //     break;
-      //   }
-      // }
-      // return index;
     }
     // end contour-finding code
 
@@ -221,13 +233,160 @@ module.exports = function(THREE) {
           return;
       }
 
-      const newVertices = this.newEdges.flat().map(index => this.targetGeometry.vertices[index].clone())
-      const contours = getContours(newVertices, [], true)
+      let contours
+      if(this.slicePlane.nonPlanar) {
+        // ALGORITHM FOR CLOSING 2D PLANAR EDGE LOOPS FROM POLYGONAL CUT
 
+        // map boundary edges
+        //  for every edge, determine which plane is closest (by sum of abs(distance) for endpoints)
+
+        // map planes
+        //    find open-ended contours among the points cast to that plane
+
+        // map rays
+        //   find all endpoints of unclosed contours closest to each ray
+        //   sort points by distance from origin of ray?
+        //   find pairs of endpoints (crossings) sorted by distance (0 and 1, 2 and 3, etc)
+        //   connect pairs of endpoints
+        //   merge contours, reevaluate?
+
+        // @TODO: handle coplanar holes
+        // once we have all planar loops (closed contours)...
+        // map contours
+        //   determine if overlapping/enclosed? (all points within SDF defined by contour)
+        //   if overlapping/contained, then attach to parent contour and mark as hole
+
+        const planes = this.slicePlane.planes()
+        const rays = this.slicePlane.rays()
+
+        contours = []
+
+        let index = [...planes]
+        const verticesByPlane = new Map()
+        index.forEach(plane => verticesByPlane.set(plane, []))
+
+        this.newEdges.forEach(edge => {
+          const begin = this.targetGeometry.vertices[edge[0]]
+          const end = this.targetGeometry.vertices[edge[1]]
+          index.sort((planeA, planeB) => {
+            return (Math.abs(planeA.distanceToPoint(begin)) + Math.abs(planeA.distanceToPoint(end))) - (Math.abs(planeB.distanceToPoint(begin)) + Math.abs(planeB.distanceToPoint(end)))
+          })
+          verticesByPlane.get(index[0]).push(begin.clone(), end.clone())
+        })
+
+        planes.map((plane, planeIndex) => {
+          const vertices = verticesByPlane.get(plane)
+          if(vertices.length === 0) { return [] } // no edges near this plane
+
+          const planeContours = getContours(vertices, [])
+          const quaternion = getTransform(plane)
+          planeContours.forEach(contour => {
+            contour.transform = quaternion
+            contour.normal = plane.normal
+          })
+
+          index = [...rays]
+          const unclosedContours = planeContours.filter(contour => !contour.closed)
+          const endpointsByRay = new Map()
+          index.forEach(ray => endpointsByRay.set(ray, []))
+          const contourMap = new Map()
+
+          unclosedContours.flatMap((contour, i) => {
+            contour.i = i
+            const begin = contour[0]
+            const end = contour[contour.length - 1]
+            contourMap.set(begin, contour)
+            contourMap.set(end, contour)
+
+            return [begin, end]
+          }).forEach(point => {
+            index.sort((rayA, rayB) => {
+              return Math.abs(rayA.distanceToPoint(point)) - Math.abs(rayB.distanceToPoint(point))
+            })
+            endpointsByRay.get(index[0]).push(point)
+          })
+
+          rays.map(ray => {
+
+            let endpoints = endpointsByRay.get(ray)
+            if(endpoints.length === 0) { return } // no endpoints near this ray
+
+            if(endpoints.length % 2 !== 0) {
+              throw new Error('Encountered an odd number of open endpoints. Unable to close contours.')
+              console.warn('odd number of crossings, your geometry is out of this world!')
+            }
+
+            endpoints = endpoints.sort((a, b) => {
+              const origin = ray.origin
+
+              return origin.distanceTo(a) - origin.distanceTo(b)
+            })
+
+            for(let i = 0; i < (endpoints.length / 2); i++) {
+              const offset = i*2
+
+              const a = endpoints[offset]
+              const b = endpoints[offset+1]
+
+              const contourA = contourMap.get(a)
+              const contourB = contourMap.get(b)
+              console.debug(`contour ${planeIndex}:${contourA.i} meeting ${planeIndex}:${contourB.i}`)
+              if(contourA === contourB) {
+                if(a === contourA[0]) {
+                  contourA.push(a.clone())
+                } else {
+                  contourA.push(b.clone())
+                }
+                contourA.closed = true
+              } else {
+                let reindex
+                if(a === contourA[0]) {
+                  if(b === contourB[0]) {
+                    contourA.unshift(...contourB.reverse())
+                    reindex = contourA[0]
+                  } else { // b === contourB.last
+                    contourA.unshift(...contourB)
+                    reindex = contourA[0]
+                  }
+                } else { // a === contourA.last
+                  if(b === contourB[0]) {
+                    contourA.push(...contourB)
+                    reindex = contourA[contourA.length - 1]
+                  } else { // b === contourB.last
+                    contourA.push(...contourB.reverse())
+                    reindex = contourA[contourA.length - 1]
+                  }
+                }
+                contourA.i = `${contourA.i},${contourB.i}`
+                contourMap.set(reindex, contourA)
+                planeContours.splice(planeContours.indexOf(contourB), 1)
+              }
+            }
+          })
+          const stillUnclosed = planeContours.filter(contour => !contour.closed).length > 0
+          if(stillUnclosed) {
+            throw new Error('unable to close contours')
+            console.warn('unable to close contours')
+          }
+          contours.push(...planeContours)
+        })
+      } else {
+        const newVertices = this.newEdges.flat().map(index => this.targetGeometry.vertices[index].clone())
+        contours = getContours(newVertices, [])
+        const quaternion = getTransform(this.slicePlane)
+        contours.forEach(contour => {
+          contour.transform = quaternion
+          contour.normal = this.slicePlane.normal
+        })
+      }
+
+      // triangulate the closed contours
       contours.forEach(contour => {
-        const contourVerts = contour.flatMap(v => v.toArray())
+        // transform points into the plane of the contour
+        const contourVerts = contour.flatMap(v => v.clone().applyQuaternion(contour.transform).toArray() )
+
         const result = earcut(contourVerts, null, 3)
-        let vertexIndex = this.targetGeometry.vertices.length // next index
+        let vertexIndex = this.targetGeometry.vertices.length // to initialize next index
         for(let i = 0; i < (result.length / 3); i++) {
           const offset = i*3
           const a = contour[result[offset]].clone()
@@ -235,7 +394,7 @@ module.exports = function(THREE) {
           const c = contour[result[offset+2]].clone()
 
           var normal = this.faceNormalFromVertices([a, b, c])
-          if(normal.dot(this.slicePlane.normal) > .5) {
+          if(normal.dot(contour.normal) > .5) {
             this.targetGeometry.vertices.push(c, b, a)
           } else {
             this.targetGeometry.vertices.push(a, b, c)
@@ -249,16 +408,6 @@ module.exports = function(THREE) {
 
       this.targetGeometry.computeFaceNormals()
       return
-      // facesFromEdges(this.newEdges)
-      //     .forEach(function(faceIndices) {
-      //         var normal = this.faceNormal(faceIndices);
-      //         if (normal.dot(this.slicePlane.normal) > .5) {
-      //             faceIndices.reverse();
-      //         }
-      //         this.startFace();
-      //         this.faceIndices = faceIndices;
-      //         this.endFace();
-      //     }, this);
     };
 
     GeometryBuilder.prototype.addVertex = function(key) {
