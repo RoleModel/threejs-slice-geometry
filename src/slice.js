@@ -1,6 +1,71 @@
-//var facesFromEdges = require('./faces-from-edges.js');
-
 var earcut = require('earcut')
+//var libtess = require('libtess')
+
+// var tessy = (function initTesselator() {
+//   // function called for each vertex of tesselator output
+//   function vertexCallback(data, polyVertArray) {
+//     // console.log(data[0], data[1]);
+//     polyVertArray[polyVertArray.length] = data[0];
+//     polyVertArray[polyVertArray.length] = data[1];
+//   }
+//   function begincallback(type) {
+//     if (type !== libtess.primitiveType.GL_TRIANGLES) {
+//       console.log('expected TRIANGLES but got type: ' + type);
+//     }
+//   }
+//   function errorcallback(errno) {
+//     console.log('error callback');
+//     console.log('error number: ' + errno);
+//   }
+//   // callback for when segments intersect and must be split
+//   function combinecallback(coords, data, weight) {
+//     // console.log('combine callback');
+//     return [coords[0], coords[1], coords[2]];
+//   }
+//   function edgeCallback(flag) {
+//     // don't really care about the flag, but need no-strip/no-fan behavior
+//     // console.log('edge flag: ' + flag);
+//   }
+//
+//   var tessy = new libtess.GluTesselator();
+//   // tessy.gluTessProperty(libtess.gluEnum.GLU_TESS_WINDING_RULE, libtess.windingRule.GLU_TESS_WINDING_POSITIVE);
+//   tessy.gluTessCallback(libtess.gluEnum.GLU_TESS_VERTEX_DATA, vertexCallback);
+//   tessy.gluTessCallback(libtess.gluEnum.GLU_TESS_BEGIN, begincallback);
+//   tessy.gluTessCallback(libtess.gluEnum.GLU_TESS_ERROR, errorcallback);
+//   tessy.gluTessCallback(libtess.gluEnum.GLU_TESS_COMBINE, combinecallback);
+//   tessy.gluTessCallback(libtess.gluEnum.GLU_TESS_EDGE_FLAG, edgeCallback);
+//
+//   return tessy;
+// })();
+//
+// function triangulate(contours) {
+//   // libtess will take 3d verts and flatten to a plane for tesselation
+//   // since only doing 2d tesselation here, provide z=1 normal to skip
+//   // iterating over verts only to get the same answer.
+//   // comment out to test normal-generation code
+//   tessy.gluTessNormal(0, 0, 1);
+//
+//   var triangleVerts = [];
+//   tessy.gluTessBeginPolygon(triangleVerts);
+//
+//   for (var i = 0; i < contours.length; i++) {
+//     tessy.gluTessBeginContour();
+//     var contour = contours[i];
+//     for (var j = 0; j < contour.length; j += 3) {
+//       var coords = [contour[j], contour[j + 1], 0];
+//       tessy.gluTessVertex(coords, coords);
+//     }
+//     tessy.gluTessEndContour();
+//   }
+//
+//   // finish polygon (and time triangulation process)
+//   var startTime = Date.now();
+//   tessy.gluTessEndPolygon();
+//   var endTime = Date.now();
+//   console.log('tesselation time: ' + (endTime - startTime).toFixed(2) + 'ms');
+//
+//   return triangleVerts;
+// }
 
 module.exports = function(THREE) {
     "use strict";
@@ -25,6 +90,50 @@ module.exports = function(THREE) {
       const b = plane.normal
       q.setFromUnitVectors(b, a)
       return q
+    }
+
+    const clamp = (v, min, max) => {
+      if(v < min) {
+        return min
+      } else if(v > max) {
+        return max
+      } else {
+        return v
+      }
+    }
+
+    // based on a SDF shader implemented by Inigo Quilez under MIT license
+    // https://www.shadertoy.com/view/wdBXRW
+    const distanceToContour = function(vertices, p) {
+      const point = new THREE.Vector2(p.x, p.y)
+
+      const num = vertices.length
+      const a1 = point.clone().sub(vertices[0]) // Vector from first vertex to point
+      let d = a1.clone().dot(a1) // squared length
+      let s = 1.0 // sign
+      for( let i=0, j=num-1; i<num; j=i, i++ ) {
+          // distance
+          const e = vertices[j].clone().sub(vertices[i]) // Vector from current vertex to previous vertex
+          const w = point.clone().sub(vertices[i]) // Vector from current vertex to point
+
+          const b = w.clone().sub(
+            e.clone().multiplyScalar(
+              clamp((w.clone().dot(e)/e.clone().dot(e)), 0.0, 1.0) // or `clamp`
+            )
+          ) // Vector from closest point on edge i-j to point
+          d = Math.min( d, b.clone().dot(b) ) // minimum square distance
+
+          // winding number from http://geomalgorithms.com/a03-_inclusion.html
+          const cond = [
+            point.y >= vertices[i].y,
+            point.y < vertices[j].y,
+            (e.x * w.y) > (e.y * w.x)
+          ]
+          if( cond.every(con => con) || cond.every(con => !con) ) s*=-1.0
+      }
+
+      const v = s*Math.sqrt(d)
+      return v
     }
 
     // contour-finding code based on https://stackoverflow.com/a/46811485/2100919
@@ -313,7 +422,7 @@ module.exports = function(THREE) {
 
             if(endpoints.length % 2 !== 0) {
               throw new Error('Encountered an odd number of open endpoints. Unable to close contours.')
-              console.warn('odd number of crossings, your geometry is out of this world!')
+              console.warn('Encountered an odd number of open endpoints. Unable to close contours.')
             }
 
             endpoints = endpoints.sort((a, b) => {
@@ -383,9 +492,66 @@ module.exports = function(THREE) {
       // triangulate the closed contours
       contours.forEach(contour => {
         // transform points into the plane of the contour
-        const contourVerts = contour.flatMap(v => v.clone().applyQuaternion(contour.transform).toArray() )
+        let contourVerts = contour.map(v => v.clone().applyQuaternion(contour.transform))
 
-        const result = earcut(contourVerts, null, 3)
+        let contour2D = []
+        let initial = contourVerts[0]
+        let minX = initial.x, maxX = initial.x, minY = initial.y, maxY = initial.y, z = initial.z;
+        contourVerts.forEach(v => {
+          if(v.x > maxX) {
+            maxX = v.x
+          } else if(v.x < minX) {
+            minX = v.x
+          }
+
+          if(v.y > maxY) {
+            maxY = v.y
+          } else if(v.y < minY) {
+            minY = v.y
+          }
+          contour2D.push(new THREE.Vector2(v.x, v.y))
+        })
+        contour2D.pop() // remove duplicated end vertex
+
+        const step = (maxX - minX) / 10
+        //console.log(step)
+        let p = new THREE.Vector3()
+        const steiners = []
+        for(let i = minX; i < maxX; i = i + step) {
+          for(let j = minY; j < maxY; j = j + step) {
+            p.x = i
+            p.y = j
+            p.z = z
+            if(distanceToContour(contour2D, p) < 0) {
+              steiners.push(p.clone())
+            }
+          }
+        }
+
+        const holes = []
+        if(steiners.length > 0) {
+          const firstSteiner = contourVerts.length
+          const length = steiners.length
+          contourVerts.push(...steiners)
+          for(let i = firstSteiner; i < (firstSteiner+length); i++) {
+            holes.push(i)
+          }
+        }
+
+        const a = new THREE.Vector3(0, 0, 1)
+        const reInverse = new THREE.Quaternion()
+        const b = contour.normal
+        reInverse.setFromUnitVectors(a, b)
+        contour.push(
+          ...steiners.map(v => v.applyQuaternion(reInverse))
+        )
+
+        contourVerts = contourVerts.flatMap(v => v.toArray() )
+
+        console.log('start')
+        const result = earcut(contourVerts, holes, 3)
+        console.log('end')
+
         let vertexIndex = this.targetGeometry.vertices.length // to initialize next index
         for(let i = 0; i < (result.length / 3); i++) {
           const offset = i*3
