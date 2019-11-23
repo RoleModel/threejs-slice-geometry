@@ -1,4 +1,6 @@
 var earcut = require('earcut')
+var cdt = require('cdt2d')
+
 //var libtess = require('libtess')
 
 // var tessy = (function initTesselator() {
@@ -477,6 +479,14 @@ module.exports = function(THREE) {
             throw new Error('unable to close contours')
             console.warn('unable to close contours')
           }
+
+          // planeContours.forEach(contour => {
+          //   planeContours.filter(potentialHole => {
+          //     if potentialHole IS contour, skip
+          //     if potentialHole has overlap with contour, add to holes
+          //     else skip
+          //   })
+          // })
           contours.push(...planeContours)
         })
       } else {
@@ -491,6 +501,7 @@ module.exports = function(THREE) {
 
       // triangulate the closed contours
       contours.forEach(contour => {
+        contour.pop() // remove duplicated end vertex
         // transform points into the plane of the contour
         let contourVerts = contour.map(v => v.clone().applyQuaternion(contour.transform))
 
@@ -511,30 +522,23 @@ module.exports = function(THREE) {
           }
           contour2D.push(new THREE.Vector2(v.x, v.y))
         })
-        contour2D.pop() // remove duplicated end vertex
 
-        const step = (maxX - minX) / 10
-        //console.log(step)
-        let p = new THREE.Vector3()
+        let perimeter = 0
+        for (let i = 0, j = 1, length = contour2D.length; i < length; ++i, j = (i + 1) % length) {
+          perimeter += contour2D[i].distanceTo(contour2D[j])
+        }
+        perimeter += contour2D[contour2D.length - 1].distanceTo(contour2D[0])
+
+        // use this rough heuristic to estimate point density of the contour
+        const step = perimeter / (contour.length * Math.sqrt(2.0))
+
         const steiners = []
         for(let i = minX; i < maxX; i = i + step) {
           for(let j = minY; j < maxY; j = j + step) {
-            p.x = i
-            p.y = j
-            p.z = z
+            const p = new THREE.Vector3(i, j, z)
             if(distanceToContour(contour2D, p) < 0) {
-              steiners.push(p.clone())
+              steiners.push(p)
             }
-          }
-        }
-
-        const holes = []
-        if(steiners.length > 0) {
-          const firstSteiner = contourVerts.length
-          const length = steiners.length
-          contourVerts.push(...steiners)
-          for(let i = firstSteiner; i < (firstSteiner+length); i++) {
-            holes.push(i)
           }
         }
 
@@ -542,22 +546,29 @@ module.exports = function(THREE) {
         const reInverse = new THREE.Quaternion()
         const b = contour.normal
         reInverse.setFromUnitVectors(a, b)
+
+        const edges = []
+        for(let i = 0; i < (contour.length - 1); i++) { // skip final point, which is duplicate of start point
+          edges.push([i, i+1])
+        }
+        edges.push([contour.length - 1, 0])
+
+        contourVerts.push(...steiners.map(v => v.clone()))
+
         contour.push(
-          ...steiners.map(v => v.applyQuaternion(reInverse))
+          ...steiners.map(v => v.clone().applyQuaternion(reInverse))
         )
 
-        contourVerts = contourVerts.flatMap(v => v.toArray() )
-
         console.log('start')
-        const result = earcut(contourVerts, holes, 3)
+        const result = cdt(contourVerts.map(v => v.toArray().slice(0, 2) ), edges, { delaunay: true, exterior: false, interior: true })
         console.log('end')
 
         let vertexIndex = this.targetGeometry.vertices.length // to initialize next index
-        for(let i = 0; i < (result.length / 3); i++) {
-          const offset = i*3
-          const a = contour[result[offset]].clone()
-          const b = contour[result[offset+1]].clone()
-          const c = contour[result[offset+2]].clone()
+        for(let i = 0; i < (result.length); i++) {
+          const tri = result[i]
+          const a = contour[tri[0]].clone()
+          const b = contour[tri[1]].clone()
+          const c = contour[tri[2]].clone()
 
           var normal = this.faceNormalFromVertices([a, b, c])
           if(normal.dot(contour.normal) > .5) {
