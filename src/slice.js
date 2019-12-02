@@ -1,73 +1,6 @@
 var earcut = require('earcut')
 var cdt = require('cdt2d')
-
-//var libtess = require('libtess')
-
-// var tessy = (function initTesselator() {
-//   // function called for each vertex of tesselator output
-//   function vertexCallback(data, polyVertArray) {
-//     // console.log(data[0], data[1]);
-//     polyVertArray[polyVertArray.length] = data[0];
-//     polyVertArray[polyVertArray.length] = data[1];
-//   }
-//   function begincallback(type) {
-//     if (type !== libtess.primitiveType.GL_TRIANGLES) {
-//       console.log('expected TRIANGLES but got type: ' + type);
-//     }
-//   }
-//   function errorcallback(errno) {
-//     console.log('error callback');
-//     console.log('error number: ' + errno);
-//   }
-//   // callback for when segments intersect and must be split
-//   function combinecallback(coords, data, weight) {
-//     // console.log('combine callback');
-//     return [coords[0], coords[1], coords[2]];
-//   }
-//   function edgeCallback(flag) {
-//     // don't really care about the flag, but need no-strip/no-fan behavior
-//     // console.log('edge flag: ' + flag);
-//   }
-//
-//   var tessy = new libtess.GluTesselator();
-//   // tessy.gluTessProperty(libtess.gluEnum.GLU_TESS_WINDING_RULE, libtess.windingRule.GLU_TESS_WINDING_POSITIVE);
-//   tessy.gluTessCallback(libtess.gluEnum.GLU_TESS_VERTEX_DATA, vertexCallback);
-//   tessy.gluTessCallback(libtess.gluEnum.GLU_TESS_BEGIN, begincallback);
-//   tessy.gluTessCallback(libtess.gluEnum.GLU_TESS_ERROR, errorcallback);
-//   tessy.gluTessCallback(libtess.gluEnum.GLU_TESS_COMBINE, combinecallback);
-//   tessy.gluTessCallback(libtess.gluEnum.GLU_TESS_EDGE_FLAG, edgeCallback);
-//
-//   return tessy;
-// })();
-//
-// function triangulate(contours) {
-//   // libtess will take 3d verts and flatten to a plane for tesselation
-//   // since only doing 2d tesselation here, provide z=1 normal to skip
-//   // iterating over verts only to get the same answer.
-//   // comment out to test normal-generation code
-//   tessy.gluTessNormal(0, 0, 1);
-//
-//   var triangleVerts = [];
-//   tessy.gluTessBeginPolygon(triangleVerts);
-//
-//   for (var i = 0; i < contours.length; i++) {
-//     tessy.gluTessBeginContour();
-//     var contour = contours[i];
-//     for (var j = 0; j < contour.length; j += 3) {
-//       var coords = [contour[j], contour[j + 1], 0];
-//       tessy.gluTessVertex(coords, coords);
-//     }
-//     tessy.gluTessEndContour();
-//   }
-//
-//   // finish polygon (and time triangulation process)
-//   var startTime = Date.now();
-//   tessy.gluTessEndPolygon();
-//   var endTime = Date.now();
-//   console.log('tesselation time: ' + (endTime - startTime).toFixed(2) + 'ms');
-//
-//   return triangleVerts;
-// }
+//var poly2tri = require('triangulate-polyline')
 
 module.exports = function(THREE) {
     "use strict";
@@ -176,7 +109,7 @@ module.exports = function(THREE) {
         let p2Index = getPairIndex(p1, p1Index, points);
         let p2 = points[p2Index];
         p2.checked = true;
-        let isClosed = p2.equals(contour[0], 1e-6);
+        let isClosed = p2.equals(contour[0], 1e-10);
         if (!isClosed) {
           contour.push(p2.clone());
           return getContour(p2, points, contour);
@@ -210,7 +143,7 @@ module.exports = function(THREE) {
       let index = 0;
       for (let i = 0; i < points.length; i++){
         let p = points[i];
-        if (p.checked !== true && p.equals(point, 1e-6)){ // early exits, not technically 'nearest' point. Nearest would be better, but also slower
+        if (p.checked !== true && p.equals(point, 1e-10)){ // early exits, not technically 'nearest' point. Nearest would be better, but also slower
           index = i;
           break;
         }
@@ -504,6 +437,7 @@ module.exports = function(THREE) {
         contour.pop() // remove duplicated end vertex
         // transform points into the plane of the contour
         let contourVerts = contour.map(v => v.clone().applyQuaternion(contour.transform))
+        const lastIndex = contourVerts.length - 1
 
         let contour2D = []
         let initial = contourVerts[0]
@@ -560,12 +494,19 @@ module.exports = function(THREE) {
         )
 
         console.log('start')
-        const result = cdt(contourVerts.map(v => v.toArray().slice(0, 2) ), edges, { delaunay: true, exterior: false, interior: true })
+        const holeIndices = []
+        for(let i = 1; i <= steiners.length; i++) {
+          holeIndices.push(lastIndex + i)
+        }
+        const result = earcut(contourVerts.flatMap(v => v.toArray().slice(0, 2) ), holeIndices, 2)
+        //const result = cdt(contourVerts.map(v => v.toArray().slice(0, 2) ), edges, { delaunay: true, exterior: false, interior: true })
         console.log('end')
 
         let vertexIndex = this.targetGeometry.vertices.length // to initialize next index
-        for(let i = 0; i < (result.length); i++) {
-          const tri = result[i]
+        for(let i = 0; i < (result.length/3); i++) {
+          //const tri = result[i]
+          const offset = i*3
+          const tri = [result[offset], result[offset+1], result[offset+2]]
           const a = contour[tri[0]].clone()
           const b = contour[tri[1]].clone()
           const c = contour[tri[2]].clone()
