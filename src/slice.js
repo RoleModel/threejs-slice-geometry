@@ -92,24 +92,33 @@ module.exports = function(THREE) {
 
           const subject = contours[j]
 
-          let inside
-          if(subject.contour2d) {
-            inside = subject.contour2d.some(v => distanceToContour(contour.contour2d, v) < 0 )
-          } else {
-            inside = subject.some(v => {
-             const p = v.clone().applyQuaternion(subject.transform)
-             return distanceToContour(contour.contour2d, p) < 0
-           })
-          }
+          // applying a less than robust, but highly efficient approach...
+          // assuming clean geometry, two boundary contours will not be intersecting,
+          //   they will either be entirely within or entirely without an alternative contour
+          // therefore, we can check a single point, and if it falls within the putative root,
+          //   we can consider all its contour to be so.
+          // And if it fails to fall within... we can move on to the next contour.
+          // If it is on the line, we can reevaluate with the next point on the contour.
 
-          if(inside) {
-            holeIndexes.push(j)
-            contour.holes = contour.holes || []
-            contour.holes.push(contour.length)
-            if(subject.holes) {
-              contour.holes.push(...subject.holes.map(offset => offset + contour.length))
+          for(let k = 0; k < subject.length; k++) {
+            const p = subject.contour2d ? subject.contour2d[k] : subject[k].clone().applyQuaternion(subject.transform)
+
+            const distance = distanceToContour(contour.contour2d, p)
+            if(distance < 0) { // inside
+              holeIndexes.push(j)
+              contour.holes = contour.holes || []
+              contour.holes.push(contour.length)
+              if(subject.holes) {
+                contour.holes.push(...subject.holes.map(offset => offset + contour.length))
+              }
+              contour.push(...subject)
+              break
+            } else if(distance > 0) { // outside
+              // do nothing, this subject seems to be external to the contour's loop
+              break
+            } else if(distance = 0) { // on the same contour
+              continue
             }
-            contour.push(...subject)
           }
         }
       }
