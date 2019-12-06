@@ -27,6 +27,96 @@ module.exports = function(THREE) {
       return q
     }
 
+    const clamp = (v, min, max) => {
+      if(v < min) {
+        return min
+      } else if(v > max) {
+        return max
+      } else {
+        return v
+      }
+    }
+
+    // based on a SDF shader implemented by Inigo Quilez under MIT license
+    // https://www.shadertoy.com/view/wdBXRW
+    const distanceToContour = function(vertices, p) {
+      const point = new THREE.Vector2(p.x, p.y)
+
+      const num = vertices.length
+      const a1 = point.clone().sub(vertices[0]) // Vector from first vertex to point
+      let d = a1.clone().dot(a1) // squared length
+      let s = 1.0 // sign
+      for( let i=0, j=num-1; i<num; j=i, i++ ) {
+          // distance
+          const e = vertices[j].clone().sub(vertices[i]) // Vector from current vertex to previous vertex
+          const w = point.clone().sub(vertices[i]) // Vector from current vertex to point
+
+          const b = w.clone().sub(
+            e.clone().multiplyScalar(
+              clamp((w.clone().dot(e)/e.clone().dot(e)), 0.0, 1.0) // or `clamp`
+            )
+          ) // Vector from closest point on edge i-j to point
+          d = Math.min( d, b.clone().dot(b) ) // minimum square distance
+
+          // winding number from http://geomalgorithms.com/a03-_inclusion.html
+          const cond = [
+            point.y >= vertices[i].y,
+            point.y < vertices[j].y,
+            (e.x * w.y) > (e.y * w.x)
+          ]
+          if( cond.every(con => con) || cond.every(con => !con) ) s*=-1.0
+      }
+
+      const v = s*Math.sqrt(d)
+      return v
+    }
+
+    // map contours
+    //   determine if overlapping/enclosed? (any points within SDF defined by contour)
+    //   if overlapping/contained, then attach to parent contour and mark as hole
+    const associateHoles = function(contours) {
+      const holeIndexes = []
+      for(let i = 0; i < contours.length; i++) {
+        const contour = contours[i]
+
+        if(holeIndexes.includes(i)) { continue; } // already determined to be a child
+
+        contour.contour2d = contour.map(v => {
+          const p = v.clone().applyQuaternion(contour.transform)
+          return new THREE.Vector2(p.x, p.y)
+        })
+        contour.contour2d.pop() // clean up duplicated end vertice
+
+        for(let j = 0; j < contours.length; j++) {
+          if(i === j || holeIndexes.includes(j)) { continue; }
+
+          const subject = contours[j]
+
+          let inside
+          if(subject.contour2d) {
+            inside = subject.contour2d.some(v => distanceToContour(contour.contour2d, v) < 0 )
+          } else {
+            inside = subject.some(v => {
+             const p = v.clone().applyQuaternion(subject.transform)
+             return distanceToContour(contour.contour2d, p) < 0
+           })
+          }
+
+          if(inside) {
+            holeIndexes.push(j)
+            contour.holes = contour.holes || []
+            contour.holes.push(contour.length)
+            if(subject.holes) {
+              contour.holes.push(...subject.holes.map(offset => offset + contour.length))
+            }
+            contour.push(...subject)
+          }
+        }
+      }
+
+      return contours.filter((_v, i) => !holeIndexes.includes(i) )
+    }
+
     // contour-finding code based on https://stackoverflow.com/a/46811485/2100919
     // heavily modified to permit finding maximal open-ended non-cyclic contours
     var getContours = function(points, contours) {
@@ -250,12 +340,6 @@ module.exports = function(THREE) {
         //   connect pairs of endpoints
         //   merge contours, reevaluate?
 
-        // @TODO: handle coplanar holes
-        // once we have all planar loops (closed contours)...
-        // map contours
-        //   determine if overlapping/enclosed? (all points within SDF defined by contour)
-        //   if overlapping/contained, then attach to parent contour and mark as hole
-
         const planes = this.slicePlane.planes()
         const rays = this.slicePlane.rays()
 
@@ -368,7 +452,10 @@ module.exports = function(THREE) {
             throw new Error('unable to close contours')
             console.warn('unable to close contours')
           }
-          contours.push(...planeContours)
+
+          const rootContours = associateHoles(planeContours)
+
+          contours.push(...rootContours)
         })
       } else {
         const newVertices = this.newEdges.flat().map(index => this.targetGeometry.vertices[index].clone())
@@ -378,6 +465,8 @@ module.exports = function(THREE) {
           contour.transform = quaternion
           contour.normal = this.slicePlane.normal
         })
+
+        contours = associateHoles(contours)
       }
 
       // triangulate the closed contours
@@ -385,7 +474,7 @@ module.exports = function(THREE) {
         // transform points into the plane of the contour
         const contourVerts = contour.flatMap(v => v.clone().applyQuaternion(contour.transform).toArray() )
 
-        const result = earcut(contourVerts, null, 3)
+        const result = earcut(contourVerts, contour.holes, 3)
         let vertexIndex = this.targetGeometry.vertices.length // to initialize next index
         for(let i = 0; i < (result.length / 3); i++) {
           const offset = i*3
