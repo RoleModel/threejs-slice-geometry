@@ -100,7 +100,7 @@ module.exports = function(THREE) {
           // And if it fails to fall within... we can move on to the next contour.
           // If it is on the line, we can reevaluate with the next point on the contour.
 
-          for(let k = 0; k < subject.length; k++) {
+          for(let k = 0; k < subject.length - 1; k++) {
             const p = subject.contour2d ? subject.contour2d[k] : subject[k].clone().applyQuaternion(subject.transform)
 
             const distance = distanceToContour(contour.contour2d, p)
@@ -116,7 +116,7 @@ module.exports = function(THREE) {
             } else if(distance > 0) { // outside
               // do nothing, this subject seems to be external to the contour's loop
               break
-            } else if(distance = 0) { // on the same contour
+            } else if(distance === 0) { // on the same contour
               continue
             }
           }
@@ -164,7 +164,7 @@ module.exports = function(THREE) {
         let p2Index = getPairIndex(p1, p1Index, points);
         let p2 = points[p2Index];
         p2.checked = true;
-        let isClosed = p2.equals(contour[0], 1e-6);
+        let isClosed = p2.equals(contour[0], 1e-12);
         if (!isClosed) {
           contour.push(p2.clone());
           return getContour(p2, points, contour);
@@ -198,7 +198,7 @@ module.exports = function(THREE) {
       let index = 0;
       for (let i = 0; i < points.length; i++){
         let p = points[i];
-        if (p.checked !== true && p.equals(point, 1e-6)){ // early exits, not technically 'nearest' point. Nearest would be better, but also slower
+        if (p.checked !== true && p.equals(point, 1e-12)){ // early exits, not technically 'nearest' point. Nearest would be better, but also slower
           index = i;
           break;
         }
@@ -458,8 +458,8 @@ module.exports = function(THREE) {
           })
           const stillUnclosed = planeContours.filter(contour => !contour.closed).length > 0
           if(stillUnclosed) {
-            throw new Error('unable to close contours')
             console.warn('unable to close contours')
+            throw new Error('unable to close contours')
           }
 
           const rootContours = associateHoles(planeContours)
@@ -484,6 +484,7 @@ module.exports = function(THREE) {
         const contourVerts = contour.flatMap(v => v.clone().applyQuaternion(contour.transform).toArray() )
 
         const result = earcut(contourVerts, contour.holes, 3)
+
         let vertexIndex = this.targetGeometry.vertices.length // to initialize next index
         for(let i = 0; i < (result.length / 3); i++) {
           const offset = i*3
