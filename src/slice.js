@@ -378,7 +378,7 @@ module.exports = function(THREE) {
             contour.normal = plane.normal
           })
 
-          index = [...rays]
+          index = [rays[planeIndex], rays[(planeIndex + 1) % rays.length]]
           const unclosedContours = planeContours.filter(contour => !contour.closed)
           const endpointsByRay = new Map()
           index.forEach(ray => endpointsByRay.set(ray, []))
@@ -399,7 +399,7 @@ module.exports = function(THREE) {
             endpointsByRay.get(index[0]).push(point)
           })
 
-          rays.map(ray => {
+          index.map(ray => {
 
             let endpoints = endpointsByRay.get(ray)
             if(endpoints.length === 0) { return } // no endpoints near this ray
